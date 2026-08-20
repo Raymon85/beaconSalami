@@ -1,0 +1,5 @@
+<Solution>
+  <Folder Name="/tests/">
+    <Project Path="tests/BeaconSalami.Tests/BeaconSalami.Tests.csproj" />
+  </Folder>
+</Solution>

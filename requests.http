@@ -1,0 +1,7 @@
+@host = http://localhost:5001
+
+### Root - returns a small JSON object
+GET {{host}}/
+
+### Health - should always return 200 OK
+GET {{host}}/health
