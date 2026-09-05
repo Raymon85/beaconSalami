@@ -2,7 +2,7 @@
 
 A small, scalable link-shortener API — built as the semester project for the course **Skalbara molnapplikationer** (Scalable Cloud Applications).
 
-Each week adds a new layer: app → cloud → automatic deployment → infrastructure as code → container → security. See [`TUTORIAL.md`](./TUTORIAL.md) for the full step-by-step build log.
+Each week adds a new layer: app → cloud → automatic deployment → infrastructure as code → container → security. See [`TUTORIAL.md`](./docs/TUTORIAL.md) for the full step-by-step build log.
 
 ---
 
@@ -56,26 +56,8 @@ dotnet test
 
 ## ☁️ Deployment
 
-Currently deployed manually to Azure App Service via:
-```bash
-az webapp up \
-  --name app-clo25-rayan \
-  --resource-group rg-clo25-rayan \
-  --runtime "DOTNETCORE:10.0" \
-  --sku B1 \
-  --location swedencentral \
-  --os-type linux
-```
+Runs on **Azure App Service** (Linux, B1), scaled to **3 instances**, with a health check on `/health`.
 
-Running on **3 instances** with a health check on `/health`. Automatic CI/CD via GitHub Actions is planned for a later week — see [`TUTORIAL.md`](./TUTORIAL.md) for details and reasoning behind every decision.
+A `git push` to `main` automatically builds, tests, and deploys the app via GitHub Actions (`.github/workflows/deploy.yml`), followed by a post-deployment smoke test (`scripts/health-check.sh`) that confirms the app actually responds before the pipeline is marked successful.
 
----
-
-## 📁 Project structure
-
-```
-src/BeaconSalami/       — the app
-tests/BeaconSalami.Tests/ — unit tests
-TUTORIAL.md              — full build log, week by week
-requests.http             — manual test requests
-```
+See [`TUTORIAL.md`](./docs/TUTORIAL.md) for the full reasoning behind every decision —
