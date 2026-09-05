@@ -43,10 +43,13 @@ jobs:
           name: app
           path: artifacts/publish
 
-  deploy:
+   deploy:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - name: Check out the code (needed for the script)
+        uses: actions/checkout@v7
+
       - name: Download artifact
         uses: actions/download-artifact@v8
         with:
@@ -59,3 +62,9 @@ jobs:
           app-name: ${{ env.AZURE_WEBAPP_NAME }}
           publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
           package: artifacts/publish
+
+      - name: Health check after deployment
+        run: |
+          URL="https://${{ env.AZURE_WEBAPP_HOSTNAME }}/health"
+          chmod +x ./scripts/health-check.sh
+          ./scripts/health-check.sh "$URL"
