@@ -1,0 +1,61 @@
+name: Build and deploy to App Service
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**.md'
+  workflow_dispatch:
+
+env:
+  AZURE_WEBAPP_NAME: app-clo25-rayan
+  AZURE_WEBAPP_HOSTNAME: app-clo25-rayan.azurewebsites.net
+  DOTNET_VERSION: '10.0.x'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v7
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Build
+        run: dotnet build --configuration Release
+
+      - name: Run tests
+        run: dotnet test --configuration Release --no-build
+
+      - name: Publish the app
+        run: |
+          dotnet publish ./src/BeaconSalami/BeaconSalami.csproj \
+            --configuration Release \
+            --output artifacts/publish
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: app
+          path: artifacts/publish
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: app
+          path: artifacts/publish
+
+      - name: Deploy to App Service
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ env.AZURE_WEBAPP_NAME }}
+          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+          package: artifacts/publish
