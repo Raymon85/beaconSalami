@@ -197,7 +197,79 @@ After this, a plain `git push` to `main` builds, tests, deploys, and health-chec
 
 ---
 
+## 🏗️ Week 37 — Infrastructure as Code with Bicep (K1, K2, F2, Komp1)
+
+### 1️⃣ Which resources the template creates, and why (K1)
+
+`infra/main.bicep` describes exactly two resources, matching what already existed from the manual setup in weeks 35–36:
+
+- **`Microsoft.Web/serverfarms`** (the App Service Plan) — the machines the app runs on
+- **`Microsoft.Web/sites`** (the Web App) — the app itself, pointing at the plan via `serverFarmId: plan.id`
+
+No more, no fewer: a database, a Key Vault, or a Container Registry aren't needed yet for this track, so they aren't in the template. Adding resources "just in case" would make the file lie about what the solution actually depends on.
+
+`planName` and `appName` are required parameters with **no default value** — on purpose. This template is meant to describe the plan and app that already exist, not invent new ones. A default would risk silently creating a second, differently-named app instead of updating the real one.
+
+### 2️⃣ How scaling is defined, and why that value (K2)
+
+```bicep
+@minValue(1)
+@maxValue(3)
+param instanceCount int = 3
+
+sku: {
+  name: skuName
+  capacity: instanceCount
+}
+```
+
+`instanceCount` defaults to `3` — the same number chosen back in week 35, for the same reason: small enough to stay cheap on the B1 tier, large enough to prove the principle of redundancy and load balancing across multiple machines. The `@minValue`/`@maxValue` decorators encode the same reasoning as code: this template should never accidentally scale below 1 (no redundancy) or above what B1 can reasonably support.
+
+### 3️⃣ What in the template is security (K2)
+
+```bicep
+httpsOnly: true
+siteConfig: {
+  minTlsVersion: '1.3'
+  healthCheckPath: healthCheckPath
+  alwaysOn: true
+}
+```
+
+- **`httpsOnly: true`** — refuses plain HTTP, matching the automatic HTTPS App Service already provides on `azurewebsites.net`
+- **`minTlsVersion: '1.3'`** — the `what-if` preview showed this as an actual change (the manually-created app was still on the `1.2` default); the template now enforces the stricter version as code, not as a one-off setting someone might forget to repeat
+- **`healthCheckPath: '/health'`** — the same health check from week 35, now version-controlled instead of a manual click
+- **`SCM_DO_BUILD_DURING_DEPLOYMENT: 'false'`** (as an app setting) — makes explicit, in code, that Azure should never try to build the package itself
+
+Secrets themselves are **not** in this file — the deployment identity (see below) is a service principal stored as a GitHub secret (`AZURE_CREDENTIALS`), never hardcoded in the template or committed to the repo.
+
+### 4️⃣ How infrastructure is deployed, why, and what the next step would be (F2, Komp1)
+
+**Chosen approach: Plan A.** A service principal (`sp-clo25-rayan`) was created with the `Contributor` role, scoped only to `rg-clo25-rayan` — not the whole subscription:
+
+```bash
+az ad sp create-for-rbac --name sp-clo25-rayan --role Contributor \
+  --scopes /subscriptions/<id>/resourceGroups/rg-clo25-rayan \
+  --json-auth > azure-credentials.json
+```
+
+The resulting JSON was piped straight into a GitHub secret (`AZURE_CREDENTIALS`) and the local file deleted immediately — the same pattern used for the publish profile in week 36.
+
+**Why a narrow scope matters (least privilege):** a leaked publish profile can only overwrite one app. A leaked credential with `Contributor` on the whole subscription could create or delete *anything*, anywhere in the account. The cost of that narrow scope: the role assignment is a child of the resource group and is deleted along with it — the underlying Entra ID identity survives, but the *permission* doesn't. Every time the resource group is rebuilt, the service principal must be re-granted access, or the pipeline fails with `AuthorizationFailed`. That's not a bug — it's the price of least privilege, paid deliberately.
+
+**`az bicep build` and `what-if` before every deploy:** the template was compiled locally first to catch syntax errors early, and `what-if` was run before every real deployment. Reading a `what-if` diff means trusting only the *resource-level* lines (`~`, `+`, `-` next to a resource name like `Microsoft.Web/sites/...`) — the indented property-level noise (`freeOfferExpirationTime`, `netFrameworkVersion`) is safe to ignore, since it reflects fields Azure fills in that this template doesn't manage.
+
+**Verified idempotence:** running the same deployment twice showed the plan settle to `= Nochange` on the second run, while the app still showed harmless noise — confirming the deployment is idempotent even though `what-if`'s *prediction* isn't perfectly clean.
+
+**Own script:** `scripts/deploy-infra.sh` wraps both `what-if` (preview, `--what-if` as the first argument) and the real deploy in one script, so the same command works locally and could be wired into the pipeline later.
+
+**What the next step would be:** currently this Bicep deployment is run manually from the terminal (Plan A's script exists, but there is no dedicated `infra` job in `deploy.yml` yet). The natural next step is adding that job — using `azure/login` with the `AZURE_CREDENTIALS` secret, running `deploy-infra.sh` before the `deploy` job, and adding `needs: [build, infra]` so the app is never deployed against infrastructure that failed to provision. A further step beyond that (mentioned in the course material for week 40) would be replacing the stored service principal secret with OIDC — an identity with no long-lived password to leak in the first place.
+
+---
+
 ## 📝 Alternatives I considered
 
 - **App idea:** a to-do API or weather-proxy would also have worked, but a link shortener gives a clearer justification for a shared database/cache later in the course.
-- **Deployment:** `az webapp up` was chosen over three separate commands (`plan create` / `webapp create` / `webapp deploy`) for simplicity at an early stage of the project — same underlying mechanism, fewer steps to keep track of.
+- **Deployment (week 35):** `az webapp up` was chosen over three separate commands (`plan create` / `webapp create` / `webapp deploy`) for simplicity at an early stage of the project — same underlying mechanism, fewer steps to keep track of.
+- **IaC tool (week 37):** Bicep was chosen over Terraform and ARM. Terraform's main advantage — supporting multiple clouds — isn't relevant here since this project only targets Azure. ARM uses the same underlying engine as Bicep but is written directly in JSON, which is considerably harder to read and write by hand. Bicep gives the same declarative guarantees with the easiest syntax to get started with for an Azure-only project.
+- **Infra deployment location (week 37):** running Bicep from the terminal (Plan A's script, executed manually) was chosen for now over adding a dedicated `infra` job inside the CI/CD pipeline. Both use the same files in the repo — the difference is only who presses the button. Automating it fully is the natural next step, noted above.
