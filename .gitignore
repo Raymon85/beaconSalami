@@ -483,3 +483,4 @@ $RECYCLE.BIN/
 .azure/
 publish-profile.xml
 *.publishsettings
+azure-credentials.json
