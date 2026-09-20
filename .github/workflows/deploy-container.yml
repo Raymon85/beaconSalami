@@ -1,0 +1,60 @@
+name: Build and deploy to Container Apps
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**.md'
+  workflow_dispatch:
+
+env:
+  ACR_NAME: acrclo25rayan
+  IMAGE_NAME: beacon
+  AZURE_RESOURCE_GROUP: rg-clo25-rayan
+  CONTAINER_APP_NAME: ca-clo25-rayan
+  CONTAINER_APP_URL: https://ca-clo25-rayan.bluerock-aa5b571c.westeurope.azurecontainerapps.io
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v7
+
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Build and push the image in ACR
+        run: |
+          az acr build --registry "${{ env.ACR_NAME }}" \
+            --image "${{ env.IMAGE_NAME }}:${{ github.sha }}" \
+            --image "${{ env.IMAGE_NAME }}:latest" \
+            --file src/BeaconSalami/Dockerfile .
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the code (needed for the health-check script)
+        uses: actions/checkout@v7
+
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Roll out a new revision
+        run: |
+          IMAGE="${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}"
+          az containerapp update --name "${{ env.CONTAINER_APP_NAME }}" \
+            --resource-group "${{ env.AZURE_RESOURCE_GROUP }}" \
+            --image "$IMAGE:${{ github.sha }}"
+
+      - name: Health check after deployment
+        run: |
+          URL="${{ env.CONTAINER_APP_URL }}/health"
+          chmod +x ./scripts/health-check.sh
+          ./scripts/health-check.sh "$URL"
