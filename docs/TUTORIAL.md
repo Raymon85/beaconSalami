@@ -267,9 +267,78 @@ The resulting JSON was piped straight into a GitHub secret (`AZURE_CREDENTIALS`)
 
 ---
 
+## 🐳 Week 38 — Containers, ACR, and Container Apps (F1, K1, K2, K4, Komp1)
+
+### 1️⃣ Container track structure, and why Container Apps (F1, K1)
+
+The app now runs two completely independent ways from the same repo: the existing App Service track (weeks 35–37), and a new container track — a multi-stage `Dockerfile` (`src/BeaconSalami/Dockerfile`), built into an image in a private Azure Container Registry (`acrclo25rayan`), running on Azure Container Apps (`ca-clo25-rayan`).
+
+Container Apps was chosen over plain "Container Instances" or self-managed Kubernetes because it gives HTTP-based autoscaling (including scale-to-zero) and managed revisions out of the box, without having to operate a cluster. For a course project whose point is demonstrating scalability concepts rather than running a large production workload, that's the right level of abstraction — all the scaling behaviour F1/K2 ask for, none of the operational overhead of AKS.
+
+The Dockerfile itself is a standard two-stage build: an SDK image compiles and publishes the app, and only the published output is copied into a much smaller ASP.NET runtime image. The final image never carries the full SDK, which keeps it smaller and reduces its attack surface.
+
+Docker wasn't installed locally, so the entire build-and-run cycle used `az acr build` instead of a local `docker build` — Azure builds and pushes the image directly in the registry. This has a side benefit worth noting: the image is always built inside a Linux environment that matches the real deployment target exactly, removing any "works on my machine" risk from a different local OS.
+
+### 2️⃣ How scaling is defined, and why these values (K2)
+
+```bicep
+minReplicas: 0
+maxReplicas: 3
+rules: [
+  {
+    name: 'http-scale-rule'
+    http: {
+      metadata: {
+        concurrentRequests: '10'
+      }
+    }
+  }
+]
+```
+
+- **`minReplicas: 0`** — scale-to-zero. Unlike the App Service track (always-on, `alwaysOn: true`), a demo app with no real traffic doesn't need to run continuously here; this is a deliberate contrast between the two tracks, not an oversight.
+- **`maxReplicas: 3`** — kept in line with the `instanceCount` ceiling chosen for App Service in week 35, for the same underlying reason: enough to prove horizontal scaling under load, capped low enough to bound cost if something misbehaves.
+- **`concurrentRequests: 10`** — the HTTP scale rule's threshold: once a replica is handling more than 10 concurrent requests, Container Apps starts another replica. A low number was chosen on purpose, since the app itself is lightweight (an in-memory dictionary, no real backend work per request) — it should scale out early rather than let one replica queue up requests.
+
+### 3️⃣ Registry authentication — both directions (K2, Komp1)
+
+Two separate authentication problems had to be solved, in opposite directions:
+
+**Pushing an image into the registry (CI/CD → ACR).** The GitHub Actions pipeline authenticates as the same `sp-clo25-rayan` service principal used for Bicep deployments (Plan A, `AZURE_CREDENTIALS` secret), via `azure/login@v2`. Once logged in, `az acr build` both builds *and* pushes under that identity — no separate registry credential is needed for this direction, since the service principal's `Contributor` role on the resource group already covers ACR.
+
+**Pulling an image out of the registry (Container Apps → ACR).** This is a completely different identity: the Container App itself needs credentials to pull the image at startup, independent of whoever pushed it. `container.bicep` solves this with the registry's admin credentials (`adminUserEnabled: true`, then `acr.listCredentials()`), stored as a Container Apps *secret* (`acr-password`) rather than a plain property — so the password never appears in cleartext in the template or its outputs.
+
+The two directions use different mechanisms (a logged-in CLI identity vs. a stored registry secret) because they run in different contexts: one is an ephemeral GitHub Actions runner, the other is a long-lived Azure resource that needs to authenticate every time it restarts a replica, with nothing interactive available to log in with.
+
+**A concrete failure worth documenting:** the same lesson from week 37 repeated itself here. Deleting and recreating the resource group also deletes the service principal's *role assignment* on it (the identity survives in Entra ID, but the permission is a child of the resource group). The very first run of `deploy-container.yml` failed at the `azure/login` step with "No subscriptions found" for exactly this reason — the role assignment had to be recreated (`az role assignment create`) before the pipeline could authenticate again. This is now a standard part of restarting the project each session, for both tracks.
+
+### 4️⃣ Deployment strategy — revisions (K4)
+
+Container Apps uses **revisions** as its deployment mechanism: every time the pipeline calls `az containerapp update --image ...:${{ github.sha }}`, a brand-new revision is created and traffic is switched to it — verified directly:
+
+```
+Rev                      Active
+-----------------------  --------
+ca-clo25-rayan--i2jtoq5  False
+ca-clo25-rayan--0000001  True
+```
+
+The old revision is not deleted — it's simply marked inactive, which is what makes rollback possible (pointing traffic back at a previous revision) without rebuilding anything. This is conceptually the container-track equivalent of the App Service track's in-place update, but structurally closer to a blue-green deploy: unlike an in-place update, the previous version's container is still sitting there, not overwritten, until it's explicitly cleaned up.
+
+Tagging every image with `${{ github.sha }}` (in addition to `:latest`) is what makes this work — Container Apps only creates a new revision when the image reference actually changes, so reusing `:latest` alone would silently update the app to newer contents without a traceable, unique tag per deploy.
+
+### 5️⃣ Same app, two tracks — what's shared
+
+Both tracks run the exact same `Program.cs` — same endpoints, same in-memory `ConcurrentDictionary` store, same `/health` check. Nothing in the application code is container-specific or App-Service-specific. What differs is entirely at the infrastructure layer: how the app is packaged (a zip vs. a container image), how it's hosted (App Service Plan vs. Container Apps Environment), and how it scales (instance count vs. HTTP-based replica scaling with scale-to-zero).
+
+The one thing genuinely *not* shared between the tracks is state: each track's replicas hold their own separate in-memory dictionary, so a link shortened on the App Service track doesn't resolve on the Container Apps track, and vice versa. That's the same known limitation flagged since week 34 — solving it (a shared store such as Azure Cache for Redis or a database) is the natural next step for whichever track continues past this course.
+
+---
+
 ## 📝 Alternatives I considered
 
 - **App idea:** a to-do API or weather-proxy would also have worked, but a link shortener gives a clearer justification for a shared database/cache later in the course.
 - **Deployment (week 35):** `az webapp up` was chosen over three separate commands (`plan create` / `webapp create` / `webapp deploy`) for simplicity at an early stage of the project — same underlying mechanism, fewer steps to keep track of.
 - **IaC tool (week 37):** Bicep was chosen over Terraform and ARM. Terraform's main advantage — supporting multiple clouds — isn't relevant here since this project only targets Azure. ARM uses the same underlying engine as Bicep but is written directly in JSON, which is considerably harder to read and write by hand. Bicep gives the same declarative guarantees with the easiest syntax to get started with for an Azure-only project.
 - **Infra deployment location (week 37):** running Bicep from the terminal (Plan A's script, executed manually) was chosen for now over adding a dedicated `infra` job inside the CI/CD pipeline. Both use the same files in the repo — the difference is only who presses the button. Automating it fully is the natural next step, noted above.
+- **Local container builds (week 38):** `az acr build` was chosen over a local `docker build` since Docker wasn't installed locally. Beyond being the only viable option at the time, it turned out to have a real advantage: the image is always built in the same Linux environment it will run in, removing any risk of a Windows-vs-Linux mismatch that a local build could have introduced.
