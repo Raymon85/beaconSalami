@@ -485,3 +485,4 @@ publish-profile.xml
 *.publishsettings
 azure-credentials.json
 infra/main.json
+*.bicepcode
