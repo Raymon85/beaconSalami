@@ -45,6 +45,14 @@ app.MapGet("/{code}", (string code) =>
         : Results.NotFound(new { error = $"No link found for code '{code}'." });
 });
 
+// Probe for the scaling experiment in week 39. Remove afterwards.
+var visits = 0;
+app.MapGet("/visits", () =>
+{
+    visits++;
+    return new { visits, machine = Environment.MachineName };
+});
+
 app.Run();
 
 record ShortenRequest(string Url);
