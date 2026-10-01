@@ -349,6 +349,25 @@ Had the app grown to include file upload — for example, attaching a preview im
 
 BeaconSalami's current in-memory `ConcurrentDictionary` is exactly the anti-pattern this week's lecture warns about — state tied to a single replica's memory, invisible to every other replica, which is why a link shortened on one instance doesn't resolve on another (the known limitation carried since week 34 and restated in week 38). If that store were replaced with something shared, **Azure SQL Database** is the right choice here, not Cosmos DB: a code → URL mapping is a simple key-value pair with no need for global distribution or a carefully chosen partition key, and Cosmos DB would be solving a scaling problem this app doesn't have. The in-memory store hasn't been replaced yet — that remains the open item from week 34, now with a concrete, named successor instead of a vague "a shared store, eventually."
 
+### 3️⃣ Proof: watching the in-memory store break under real scaling (K2)
+
+To verify this rather than just describe it, a temporary `/visits` endpoint with an in-memory counter was added, deployed to the 3-instance App Service track, and called ten times in a row:
+
+```
+{"visits":1,"machine":"8cd7806c3c5e"}
+{"visits":1,"machine":"fe47bd2318b2"}
+{"visits":2,"machine":"8cd7806c3c5e"}
+{"visits":2,"machine":"fe47bd2318b2"}
+{"visits":3,"machine":"8cd7806c3c5e"}
+{"visits":4,"machine":"8cd7806c3c5e"}
+{"visits":1,"machine":"90085965786f"}
+{"visits":2,"machine":"90085965786f"}
+{"visits":5,"machine":"8cd7806c3c5e"}
+{"visits":6,"machine":"8cd7806c3c5e"}
+```
+
+The counter never reached 10 — three different machine IDs answered, each with its own `visits` variable that knew nothing about the others. Summing each machine's last value (6 + 2 + 2) accounts for all ten calls, but no single instance ever held the true total. The probe was removed immediately afterward; it was never meant to ship.
+
 ---
 
 ## 📝 Alternatives I considered
