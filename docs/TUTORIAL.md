@@ -335,6 +335,22 @@ The one thing genuinely *not* shared between the tracks is state: each track's r
 
 ---
 
+## 🔌 Week 39 — Serverless and data placement: decisions, not code (K1, K3, Komp2)
+
+This week adds no new layer to the app. The assignment is explicit that none of this is required ("no database, no cache, no serverless functions") — the deliverable is a defensible decision, not a build.
+
+### 1️⃣ Could any part of this app be a Function? (K1, Komp2)
+
+None of BeaconSalami's four endpoints (`/`, `/health`, `POST /shorten`, `GET /{code}`) do anything heavy or scheduled — every request is a single dictionary read or write, resolved in microseconds. There is nothing here worth breaking out into a Function: no queue-worthy background job, no nightly batch, no slow external call that would benefit from a trigger and a buffer between "received" and "done."
+
+Had the app grown to include file upload — for example, attaching a preview image to a shortened link — image processing would have been a natural candidate: a Blob trigger kicking off a resize Function, decoupled from the request that uploaded the file, with the upload responding in milliseconds instead of waiting on the resize. That candidate doesn't exist today, so nothing was built — deciding *not* to add a Function is the same kind of architectural choice as deciding to add one, just with less code to show for it.
+
+### 2️⃣ Where should state live — SQL vs Cosmos (K1)
+
+BeaconSalami's current in-memory `ConcurrentDictionary` is exactly the anti-pattern this week's lecture warns about — state tied to a single replica's memory, invisible to every other replica, which is why a link shortened on one instance doesn't resolve on another (the known limitation carried since week 34 and restated in week 38). If that store were replaced with something shared, **Azure SQL Database** is the right choice here, not Cosmos DB: a code → URL mapping is a simple key-value pair with no need for global distribution or a carefully chosen partition key, and Cosmos DB would be solving a scaling problem this app doesn't have. The in-memory store hasn't been replaced yet — that remains the open item from week 34, now with a concrete, named successor instead of a vague "a shared store, eventually."
+
+---
+
 ## 📝 Alternatives I considered
 
 - **App idea:** a to-do API or weather-proxy would also have worked, but a link shortener gives a clearer justification for a shared database/cache later in the course.
@@ -342,3 +358,4 @@ The one thing genuinely *not* shared between the tracks is state: each track's r
 - **IaC tool (week 37):** Bicep was chosen over Terraform and ARM. Terraform's main advantage — supporting multiple clouds — isn't relevant here since this project only targets Azure. ARM uses the same underlying engine as Bicep but is written directly in JSON, which is considerably harder to read and write by hand. Bicep gives the same declarative guarantees with the easiest syntax to get started with for an Azure-only project.
 - **Infra deployment location (week 37):** running Bicep from the terminal (Plan A's script, executed manually) was chosen for now over adding a dedicated `infra` job inside the CI/CD pipeline. Both use the same files in the repo — the difference is only who presses the button. Automating it fully is the natural next step, noted above.
 - **Local container builds (week 38):** `az acr build` was chosen over a local `docker build` since Docker wasn't installed locally. Beyond being the only viable option at the time, it turned out to have a real advantage: the image is always built in the same Linux environment it will run in, removing any risk of a Windows-vs-Linux mismatch that a local build could have introduced.
+- **Serverless (week 39):** a Function was considered and deliberately not built — there is no heavy or scheduled work in the app today to break out. **Shared state (week 39):** Azure SQL Database was chosen over Cosmos DB as the eventual home for the link store, since the data is a simple key-value mapping with no need for Cosmos's global partitioning.
