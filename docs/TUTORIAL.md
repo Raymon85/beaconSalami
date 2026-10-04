@@ -370,6 +370,60 @@ The counter never reached 10 — three different machine IDs answered, each with
 
 ---
 
+## 🔐 Week 40 — Security design: Key Vault, managed identity, and OIDC (K2, F2)
+
+This week replaces three stored passwords with proof of identity instead. Nothing here changes what the app does — only how it, and the pipeline that deploys it, prove who they are.
+
+### 1️⃣ Where my secrets are, and what they are
+
+| Secret | Where it lives | Since |
+|---|---|---|
+| Publish profile | GitHub secret `AZURE_WEBAPP_PUBLISH_PROFILE` | Week 36 |
+| Service principal password | GitHub secret `AZURE_CREDENTIALS` — **removed this week** | Week 37 → Week 40 |
+| ACR admin password | Secret inside the Container App | Week 38 |
+
+A secret that was ever committed to Git is treated as leaked — deleting the file later doesn't undo that, so it gets rotated, not just removed. None of this project's secrets were ever committed directly; they went straight into GitHub Secrets or were fetched at deploy time (`listCredentials()`), which is step 3 of a four-step ladder from "password in code" (never) to "no password at all, identity proves itself" (this week, for the Container Apps pipeline).
+
+### 2️⃣ How secrets are managed — vault, identity, reference
+
+`infra/security.bicep` adds an Azure Key Vault (`kv-clo25-rayan`) and gives the App Service a **system-assigned managed identity** (`identity: { type: 'SystemAssigned' }` on the app resource) — an identity Azure creates and manages for that one resource, with no password to leak, lend, or lose. The app's identity gets an access policy that lets it `get` and `list` secrets — never `set`.
+
+The app setting is wired with a reference, not a value:
+
+```
+MY_SECRET=@Microsoft.KeyVault(SecretUri=https://kv-clo25-rayan.vault.azure.net/secrets/demo-secret)
+```
+
+App Service resolves that reference using the app's own identity and hands the real value to the app as a plain environment variable — confirmed `Resolved` via `az rest .../configreferences`. The application code never changes and never knows Key Vault exists; it would just read `MY_SECRET` like any other setting. (BeaconSalami itself has no real secret to store today — this is the mechanism proven end-to-end, ready for the day there is one.)
+
+### 3️⃣ Which permission model I chose, and why (least privilege)
+
+Key Vault supports two authorization models: **access policies** (declared on the vault resource itself, just needs `Contributor` on the resource group) and **RBAC** (role assignments, the same system the rest of Azure uses, Microsoft's recommended default — but it requires the right to assign roles, which not everyone has).
+
+I used **access policies**, because `Contributor` on the resource group was already everything I had and needed — RBAC would have required role-assignment rights that aren't guaranteed for every setup. Least privilege in practice: the app's identity can only `get`/`list` secrets on this one vault; a separate policy gives my own account `get`/`list`/`set` so I can manage the secret's value. Key Vault doesn't even trust the account that created it — without that second policy, I couldn't read my own secret either.
+
+### 4️⃣ How the pipeline authenticates — OIDC
+
+The Container Apps pipeline (`deploy-container.yml`) used to log in with a stored service-principal password (`AZURE_CREDENTIALS`). It now uses **OIDC**: GitHub issues a short-lived token for each workflow run, scoped to this exact repo and branch (`repo:Raymon85@228735693/beaconSalami@1340710231:ref:refs/heads/main`), and Azure is configured — via an app registration's federated credential — to trust that token instead of a password. There is no secret to leak, because there is no secret stored.
+
+Setting it up took: an app registration + service principal (`az ad app create`, `az ad sp create`), a federated credential naming the exact repo/branch, a `Contributor` role assignment scoped to the resource group (same scope discipline as week 37), and three GitHub **variables** (`AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` — variables, not secrets, since none of them are passwords) read by `azure/login@v3`. The workflow also needs `permissions: id-token: write` or GitHub won't issue the token at all.
+
+I had the rights to do this (`az ad app create` succeeded directly), so this is built and proven, not just planned: both pipeline jobs logged in with OIDC and deployed successfully on an environment rebuilt from scratch this session — at which point `AZURE_CREDENTIALS` was deleted from the repo's secrets for good.
+
+The App Service pipeline (`deploy.yml`) never used `AZURE_CREDENTIALS` in the first place — it deploys with a publish profile instead — so it wasn't part of this change.
+
+### 5️⃣ What remains
+
+- BeaconSalami doesn't have a real secret to protect yet (no database connection string, no API key) — the Key Vault/identity mechanism above is proven and ready, but there's nothing production-critical behind it today. The natural next secret to move in would be a database connection string, once the shared-store decision from week 39 (Azure SQL) is actually built.
+- Key Vault uses access policies rather than RBAC, as explained above. With a subscription where I was free to assign roles myself, RBAC would be the Microsoft-recommended default instead.
+- AcrPull (replacing the Container Registry's admin password with a role-based identity, the same idea as this week's OIDC but for pulling images) is a voluntary upgrade I didn't build this week — the registry's admin credentials are still used by the Container App itself.
+
+### 6️⃣ Transport security
+
+Already in place since earlier weeks, and still true: `httpsOnly: true` and `minTlsVersion: '1.3'` are set directly in `infra/main.bicep`'s App Service resource, so plain HTTP and older TLS versions are rejected at the platform level, not left to the application to enforce.
+
+---
+
 ## 📝 Alternatives I considered
 
 - **App idea:** a to-do API or weather-proxy would also have worked, but a link shortener gives a clearer justification for a shared database/cache later in the course.
@@ -378,3 +432,4 @@ The counter never reached 10 — three different machine IDs answered, each with
 - **Infra deployment location (week 37):** running Bicep from the terminal (Plan A's script, executed manually) was chosen for now over adding a dedicated `infra` job inside the CI/CD pipeline. Both use the same files in the repo — the difference is only who presses the button. Automating it fully is the natural next step, noted above.
 - **Local container builds (week 38):** `az acr build` was chosen over a local `docker build` since Docker wasn't installed locally. Beyond being the only viable option at the time, it turned out to have a real advantage: the image is always built in the same Linux environment it will run in, removing any risk of a Windows-vs-Linux mismatch that a local build could have introduced.
 - **Serverless (week 39):** a Function was considered and deliberately not built — there is no heavy or scheduled work in the app today to break out. **Shared state (week 39):** Azure SQL Database was chosen over Cosmos DB as the eventual home for the link store, since the data is a simple key-value mapping with no need for Cosmos's global partitioning.
+- **Key Vault authorization (week 40):** access policies were chosen over RBAC, since RBAC requires role-assignment rights that aren't guaranteed in every subscription, while access policies only need `Contributor` on the resource group — the same access already used throughout this project.
