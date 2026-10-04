@@ -17,7 +17,7 @@ env:
   IMAGE_NAME: beacon
   AZURE_RESOURCE_GROUP: rg-clo25-rayan
   CONTAINER_APP_NAME: ca-clo25-rayan
-  CONTAINER_APP_URL: https://ca-clo25-rayan.bluerock-aa5b571c.westeurope.azurecontainerapps.io
+  CONTAINER_APP_URL: https://ca-clo25-rayan.icysky-8097cf46.westeurope.azurecontainerapps.io
 
 jobs:
   build-and-push:
