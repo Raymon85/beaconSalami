@@ -8,6 +8,10 @@ on:
       - '**.md'
   workflow_dispatch:
 
+permissions:
+  id-token: write
+  contents: read
+
 env:
   ACR_NAME: acrclo25rayan
   IMAGE_NAME: beacon
@@ -23,9 +27,11 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Log in to Azure
-        uses: azure/login@v2
+        uses: azure/login@v3
         with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
       - name: Build and push the image in ACR
         run: |
@@ -42,9 +48,11 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Log in to Azure
-        uses: azure/login@v2
+        uses: azure/login@v3
         with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
       - name: Roll out a new revision
         run: |
