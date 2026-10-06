@@ -4,6 +4,8 @@ A step-by-step documentation of how BeaconSalami (my link shortener) was built, 
 
 This document is updated every week as new layers are added (app → to the cloud → automatic deployment → infrastructure as code → container → security).
 
+**Terminology used throughout:** *instance* = one machine of the App Service plan; *replica* = one running copy of the Container App; *revision* = one deployed version of the Container App; *track* = one of the two ways the same app is deployed (App Service or Container Apps).
+
 ---
 
 ## 📦 Week 34 — The base app
@@ -15,7 +17,7 @@ This document is updated every week as new layers are added (app → to the clou
 - Git repo initialized and pushed to GitHub, set to public
 
 ### App idea
-I chose a **link shortener** as my app idea, one of the examples mentioned in the course material (alongside a to-do API, weather-proxy, and quote API). It's small (few endpoints), but naturally motivates a shared database and caching later on (week 39), while still being easy to keep stateless.
+I chose a **link shortener** as my app idea, one of the examples mentioned in the course material (alongside a to-do API, weather-proxy, and quote API). It's small (few endpoints), but naturally motivates a shared database and caching later on (week 39). The first version keeps its state in memory, which is the known limitation documented at the end of this file.
 
 ### Why `/health` exists from the start
 `/health` is later used by App Service (week 35), by my own script (week 36), and by the container (week 38). It was built in from day one so nothing had to change afterward.
@@ -141,6 +143,8 @@ The number of attempts is a second, optional argument (`./scripts/health-check.s
 **Known limitation, noted honestly:** the health check can pass while the *old* version is still the one answering — App Service keeps serving the previous version until the new one is ready, so an early "OK" doesn't prove the new code is live. A more precise version would have `/health` report which version is currently running.
 
 ### 5️⃣ How to rebuild everything from scratch
+
+> ⚠️ This is the early, manual route from week 36. For the current, complete rebuild see **"From zero to running"** further down.
 
 Since the resource group is deleted after every lesson day, here's the exact sequence to bring the app back from nothing:
 
@@ -400,7 +404,7 @@ App Service resolves that reference using the app's own identity and hands the r
 
 Key Vault supports two authorization models: **access policies** (declared on the vault resource itself, just needs `Contributor` on the resource group) and **RBAC** (role assignments, the same system the rest of Azure uses, Microsoft's recommended default — but it requires the right to assign roles, which not everyone has).
 
-I used **access policies**, because `Contributor` on the resource group was already everything I had and needed — RBAC would have required role-assignment rights that aren't guaranteed for every setup. Least privilege in practice: the app's identity can only `get`/`list` secrets on this one vault; a separate policy gives my own account `get`/`list`/`set` so I can manage the secret's value. Key Vault doesn't even trust the account that created it — without that second policy, I couldn't read my own secret either.
+I used **access policies**, because they are the simpler model and need only `Contributor` on the resource group, and the course pointed out that not everyone has the right to assign roles. In my own subscription I turned out to have that right (I assign `Contributor` to the pipeline identity), so RBAC would have worked here too, and it is the recommended default — see *Known weaknesses*. Least privilege in practice: the app's identity can only `get`/`list` secrets on this one vault; a separate policy gives my own account `get`/`list`/`set` so I can manage the secret's value. Key Vault doesn't even trust the account that created it — without that second policy, I couldn't read my own secret either.
 
 ### 4️⃣ How the pipeline authenticates — OIDC
 
@@ -415,12 +419,165 @@ The App Service pipeline (`deploy.yml`) never used `AZURE_CREDENTIALS` in the fi
 ### 5️⃣ What remains
 
 - BeaconSalami doesn't have a real secret to protect yet (no database connection string, no API key) — the Key Vault/identity mechanism above is proven and ready, but there's nothing production-critical behind it today. The natural next secret to move in would be a database connection string, once the shared-store decision from week 39 (Azure SQL) is actually built.
-- Key Vault uses access policies rather than RBAC, as explained above. With a subscription where I was free to assign roles myself, RBAC would be the Microsoft-recommended default instead.
+- Key Vault uses access policies rather than RBAC, as explained above. RBAC is the Microsoft-recommended default and would work in my subscription too, so the switch is listed under *Known weaknesses*.
 - AcrPull (replacing the Container Registry's admin password with a role-based identity, the same idea as this week's OIDC but for pulling images) is a voluntary upgrade I didn't build this week — the registry's admin credentials are still used by the Container App itself.
 
 ### 6️⃣ Transport security
 
 Already in place since earlier weeks, and still true: `httpsOnly: true` and `minTlsVersion: '1.3'` are set directly in `infra/main.bicep`'s App Service resource, so plain HTTP and older TLS versions are rejected at the platform level, not left to the application to enforce.
+
+---
+
+## 🚀 From zero to running — the complete rebuild guide (F1, F2, K1, K2, F3, Komp1)
+
+This section is written for someone who has **never seen this project**: an empty GitHub repo and an empty Azure resource group in, a running app on both tracks out. Every command can be copied as-is once the names in step 1 are yours.
+
+### 0️⃣ Prerequisites
+
+| You need | Check with |
+|---|---|
+| An Azure subscription where you may create resources **and** app registrations | `az account show` |
+| Azure CLI, GitHub CLI and Git installed | `az --version`, `gh --version`, `git --version` |
+| Logged in to both | `az login` and `gh auth login` |
+| A GitHub repo containing this code, **readable by the teacher** (public, or add the teacher as collaborator) | `gh repo view` |
+| A shell that understands bash (Git Bash on Windows) | — |
+
+> 💡 On Windows with Git Bash, put `MSYS_NO_PATHCONV=1` in front of any command that takes an Azure path starting with `/` (for example `/subscriptions/...`). Without it Git Bash rewrites the path into a Windows path and the command fails with a confusing error.
+
+### 1️⃣ Replace my names with yours
+
+Some Azure names are **globally unique** — if I already own `acrclo25rayan`, nobody else can create it. Those must change. Others only need to be unique inside your own resource group; they can stay, as long as every file agrees.
+
+| Name | Must be unique worldwide? | Where it appears |
+|---|---|---|
+| `acrclo25rayan` (container registry) | ✅ yes | `scripts/provision-all.sh`, `infra/container.bicepparam`, `deploy-container.yml` (`ACR_NAME`) |
+| `kv-clo25-rayan` (Key Vault) | ✅ yes | `infra/security.bicepparam` |
+| `app-clo25-rayan` (web app) | ✅ yes (it becomes `<name>.azurewebsites.net`) | `infra/main.bicepparam`, `infra/security.bicepparam`, `deploy.yml` |
+| `rg-clo25-rayan` (resource group) | no | `deploy-container.yml` (`AZURE_RESOURCE_GROUP`), the commands below |
+| `ca-clo25-rayan` (container app) | no | `infra/container.bicep`, `deploy-container.yml` (`CONTAINER_APP_NAME`) |
+| `cae-clo25-rayan`, `log-clo25-rayan` | no | `infra/container.bicep` |
+
+The quickest way to find every occurrence:
+
+```bash
+grep -rn "rayan" --exclude-dir=.git .
+```
+
+### 2️⃣ Provision both tracks with one script (F3, Komp1)
+
+```bash
+./scripts/provision-all.sh rg-clo25-rayan          # optional 2nd argument: region, default westeurope
+```
+
+What the script does, in order, and **why in this order**:
+
+1. **Creates the resource group** — everything below lives inside it.
+2. **`deploy-infra.sh`** → `infra/main.bicep`: App Service plan (3 instances) and the web app, with HTTPS-only, TLS 1.3 and the `/health` check.
+3. **`deploy-container.sh`** → `infra/container.bicep`: registry, Log Analytics workspace, Container Apps environment and the Container App.
+4. **`az acr build`** — builds the image inside the registry and pushes `beacon:v1`.
+5. **`deploy-container.sh` again** — now that the image exists, the Container App can start from it.
+
+Why is `container.bicep` deployed twice? It creates the registry **and** the app that pulls from it. The app needs an image to start, but the image can only be pushed once the registry exists. That is a chicken-and-egg problem, and running the same template before and after the image build is the simplest way out of it. The second run is safe because Bicep deployments are idempotent.
+
+### 3️⃣ Key Vault (F2 VG — security design)
+
+`security.bicep` is **not** part of `provision-all.sh` — it is run by hand, after step 2, because it needs the web app and its managed identity to exist first.
+
+```bash
+export OWNER_OBJECT_ID=$(az ad signed-in-user show --query id --output tsv)
+export SECRET_VALUE='any-demo-value'
+
+az deployment group create \
+  --resource-group rg-clo25-rayan \
+  --template-file infra/security.bicep \
+  --parameters infra/security.bicepparam
+```
+
+- `OWNER_OBJECT_ID` is your own identity in Entra ID. The template gives it `get`/`list`/`set` on secrets; the web app's identity only gets `get`/`list`.
+- `SECRET_VALUE` is read from the environment by `security.bicepparam` (`readEnvironmentVariable`) so that the value is **never written into a file in the repo**. If you forget to export it, the deployment fails before anything is created.
+
+### 4️⃣ App Service pipeline secret
+
+The App Service pipeline (`deploy.yml`) deploys with a publish profile. Repeat Week 36, steps 4 and 5: re-enable basic auth on the new app, then pipe the new publish profile straight into the `AZURE_WEBAPP_PUBLISH_PROFILE` secret. A publish profile belongs to one specific app, so it is invalid after every resource group rebuild.
+
+### 5️⃣ Container Apps pipeline identity — OIDC (F1, F2 VG)
+
+The Container Apps pipeline has **no password at all**. GitHub hands each run a short-lived token, and Azure is told in advance which token to trust.
+
+```bash
+# 1. An app registration and its service principal — the identity the pipeline will use
+APP_ID=$(az ad app create --display-name gh-clo25-rayan --query appId --output tsv)
+az ad sp create --id "$APP_ID"
+
+# 2. Permission: Contributor, scoped to this resource group only (least privilege)
+SUB=$(az account show --query id --output tsv)
+MSYS_NO_PATHCONV=1 az role assignment create \
+  --assignee "$APP_ID" --role Contributor \
+  --scope /subscriptions/$SUB/resourceGroups/rg-clo25-rayan
+
+# 3. Tell the repo which identity to log in as (variables, not secrets: none of these is a password)
+gh variable set AZURE_CLIENT_ID       --body "$APP_ID"
+gh variable set AZURE_TENANT_ID       --body "$(az account show --query tenantId --output tsv)"
+gh variable set AZURE_SUBSCRIPTION_ID --body "$SUB"
+```
+
+Then the **federated credential** — the rule that says "trust a token that looks exactly like this":
+
+```bash
+az ad app federated-credential create --id "$APP_ID" --parameters '{
+  "name": "github-main",
+  "issuer": "https://token.actions.githubusercontent.com",
+  "subject": "<SUBJECT>",
+  "audiences": ["api://AzureADTokenExchange"]
+}'
+```
+
+`<SUBJECT>` identifies this repo and branch, and it is different for every repo. The reliable way to get it: run the pipeline once. The `Log in to Azure` step prints the token it received, including a line `subject claim - repo:<owner>@<id>/<repo>@<id>:ref:refs/heads/main`. Copy that value exactly, create the credential, then re-run the workflow. Azure compares the subject character by character, so one wrong character means no login.
+
+The workflow also needs `permissions: id-token: write`, otherwise GitHub never issues the token. It is already set in `deploy-container.yml`.
+
+### 6️⃣ Point the pipeline at your Container App
+
+A new resource group gets a new random domain, and `deploy-container.yml` has the address written into its `env:` block. Fetch yours and replace the value of `CONTAINER_APP_URL`:
+
+```bash
+az containerapp show --name ca-clo25-rayan --resource-group rg-clo25-rayan \
+  --query properties.configuration.ingress.fqdn --output tsv
+```
+
+If this is left stale, the pipeline deploys successfully and then fails at the health check.
+
+### 7️⃣ Deploy and verify
+
+```bash
+git push                           # triggers both pipelines
+gh run list --limit 5              # both should be ✓
+./scripts/health-check.sh https://<container-app-fqdn>/health
+./scripts/health-check.sh https://<web-app-name>.azurewebsites.net/health
+```
+
+A green pipeline only proves that files arrived. `health-check.sh` actually asks each app whether it is alive, and exits with code `1` if it is not.
+
+### 🔁 After every resource group rebuild — checklist
+
+Deleting a resource group deletes more than the resources in it. These three things break, in this order, and I hit all three:
+
+1. **The OIDC role assignment is gone.** Symptom: the `Log in to Azure` step fails with `No subscriptions found`. The identity still exists and logs in fine; it just has no permission anywhere. Fix: step 5, part 2.
+2. **The Container App has a new address.** Symptom: deploy succeeds, health check fails. Fix: step 6.
+3. **The publish profile is invalid.** Symptom: the App Service pipeline cannot authenticate. Fix: step 4.
+
+### 🧹 Tear down
+
+```bash
+az group delete --name rg-clo25-rayan --yes --no-wait
+az group list --output table
+```
+
+Three things are **outside** the resource group and survive the delete:
+
+- the **app registrations** (`gh-clo25-rayan`, and `sp-clo25-rayan` from week 37, which still holds a live password) — remove them with `az ad app delete --id <appId>` once you are completely done with the project; deleting them earlier breaks the pipeline
+- the **Key Vault**, which stays soft-deleted for 7 days
+- GitHub's own secrets and variables, which live in the repo and are unaffected
 
 ---
 
@@ -432,4 +589,66 @@ Already in place since earlier weeks, and still true: `httpsOnly: true` and `min
 - **Infra deployment location (week 37):** running Bicep from the terminal (Plan A's script, executed manually) was chosen for now over adding a dedicated `infra` job inside the CI/CD pipeline. Both use the same files in the repo — the difference is only who presses the button. Automating it fully is the natural next step, noted above.
 - **Local container builds (week 38):** `az acr build` was chosen over a local `docker build` since Docker wasn't installed locally. Beyond being the only viable option at the time, it turned out to have a real advantage: the image is always built in the same Linux environment it will run in, removing any risk of a Windows-vs-Linux mismatch that a local build could have introduced.
 - **Serverless (week 39):** a Function was considered and deliberately not built — there is no heavy or scheduled work in the app today to break out. **Shared state (week 39):** Azure SQL Database was chosen over Cosmos DB as the eventual home for the link store, since the data is a simple key-value mapping with no need for Cosmos's global partitioning.
-- **Key Vault authorization (week 40):** access policies were chosen over RBAC, since RBAC requires role-assignment rights that aren't guaranteed in every subscription, while access policies only need `Contributor` on the resource group — the same access already used throughout this project.
+- **Key Vault authorization (week 40):** access policies were chosen over RBAC because they are simpler and need only `Contributor` on the resource group, the same access used throughout this project, while RBAC needs the right to assign roles, which the course noted not everyone has. I did have that right, so RBAC was a real option rather than a necessity; it is the recommended default, and the switch is listed under *Known weaknesses*.
+
+---
+
+## 🩹 Known weaknesses, and what I would do about them (Komp2, K1, F1, F2)
+
+These are the weaknesses in my own solution that I know about, ordered by how much damage they could do. None is fixed in this submission on purpose: the last week of the course is for verifying and documenting what exists, not for building new things two days before the deadline. Each one is written down with its fix so that it is a decision, not an oversight.
+
+### 1️⃣ State lives in memory — and so does the ID counter
+
+The link store is a `ConcurrentDictionary` and the short codes come from a `counter` variable, both inside one running process. Every instance (App Service) or replica (Container Apps) therefore has its own copy of both. The Week 39 probe showed this with a counter, and the link store behaves the same way: in my own tests the same short code answered 302 on one request and 404 on the next, depending on which replica the load balancer picked.
+
+The counter makes it worse than "link not found". Every replica starts counting at 0, so the first link created on each replica gets the code `1`. The same short code can end up pointing at **two different URLs**, and a user may be redirected to the wrong site instead of getting an error.
+
+**What I would do:** move both the links and the ID generation into the shared store already chosen in Week 39 (Azure SQL Database, with database-generated IDs). Until then, setting `maxReplicas` to 1 would hide the problem, but it would remove the scaling that K2 asks for — so I kept the scaling and documented the limitation.
+
+### 2️⃣ The image tag is defined in two places
+
+`beacon:v1` is written in `scripts/provision-all.sh` and in `infra/container.bicepparam`, while the pipeline deploys `beacon:<commit sha>`. Re-running `deploy-container.sh` after the pipeline has deployed would set the Container App back to `beacon:v1`, because the template takes the image from that parameter. I confirmed this with `deploy-container.sh --what-if`: the preview showed the running image `beacon:<commit sha>` being replaced by `beacon:v1`.
+
+**What I would do:** let the pipeline be the only thing that sets the image after the first deployment — either pass the tag into the template as a parameter from the pipeline, or have the template reuse whatever image the app is already running.
+
+### 3️⃣ The Container App address is hardcoded in the workflow
+
+`CONTAINER_APP_URL` in `deploy-container.yml` is a literal address. After a resource group rebuild it is wrong, and the pipeline then fails at the health check even though the deployment itself succeeded. This happened to me during the final week.
+
+**What I would do:** remove the literal and read the address in the health-check step with `az containerapp show ... --query properties.configuration.ingress.fqdn`, so the workflow can never disagree with Azure.
+
+### 4️⃣ Rebuilding the environment needs manual steps
+
+`provision-all.sh` creates both tracks, but it does not deploy the Key Vault, does not create the OIDC identity or its role assignment, and does not set the GitHub variables and the publish-profile secret. A full rebuild is one script plus roughly ten commands, which is why the "From zero" section has a checklist. Forgetting the role assignment gives `No subscriptions found` in the pipeline.
+
+**What I would do:** extend the script (or add a second one) with those steps. I have the rights to create role assignments — I do it for the pipeline identity — so this is a matter of time, not permission.
+
+### 5️⃣ `COPY . .` comes before the restore in the Dockerfile
+
+The Dockerfile copies the whole repository and only then runs `dotnet publish`, which restores packages. Any change to any file, even a comment in `Program.cs`, invalidates that layer, so packages are downloaded on every build and the build cache is never used.
+
+**What I would do:** copy only the `.csproj` files first, run `dotnet restore`, and copy the rest of the source after that. The restore layer is then reused until a dependency actually changes.
+
+### 6️⃣ The Container App pulls its image with the registry's admin password
+
+The registry has `adminUserEnabled: true` and the Container App stores that password as a secret. It works, and the password is never in the repo, but it is still a shared password that exists and can leak.
+
+**What I would do:** give the Container App a managed identity and the `AcrPull` role on the registry, the same idea as the OIDC identity of the pipeline but for pulling. Then the admin user can be switched off.
+
+### 7️⃣ Key Vault uses access policies, not RBAC
+
+Access policies are the simpler model and need no role assignments. Azure RBAC is the recommended default. In this subscription I was able to create role assignments (I assign `Contributor` to the pipeline identity), so RBAC would have worked here too.
+
+**What I would do:** switch the vault to RBAC authorization and grant the app's identity the `Key Vault Secrets User` role, so Key Vault and the rest of Azure share one permission model.
+
+### 8️⃣ Two deployment scripts that are almost identical
+
+`deploy-infra.sh` and `deploy-container.sh` differ only in the template and parameter file they use. A fix in one has to be repeated in the other.
+
+**What I would do:** one script that takes the template name as an argument.
+
+### 9️⃣ Scale-to-zero has a price
+
+`minReplicas: 0` keeps the container track free when idle, but the first request after an idle period has to wait until a replica has started. That is the right trade-off for a demo, and the wrong one for an app with real users.
+
+**What I would do:** set `minReplicas` to 1 as soon as response time for the first visitor matters more than the cost of one idle replica.
