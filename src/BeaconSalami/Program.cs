@@ -11,6 +11,19 @@ var app = builder.Build();
 var links = new ConcurrentDictionary<string, string>();
 var counter = 0;
 
+// NEW: each instance/replica has a unique name. Azure sets these env vars for us.
+var instanceId =
+    Environment.GetEnvironmentVariable("CONTAINER_APP_REPLICA_NAME")   // Container Apps
+    ?? Environment.GetEnvironmentVariable("WEBSITE_INSTANCE_ID")       // App Service
+    ?? Environment.MachineName;                                        // local
+
+// NEW: add the instance id as a header on EVERY response (200, 302, 404...).
+app.Use(async (ctx, next) =>
+{
+    ctx.Response.Headers["X-Instance-Id"] = instanceId;
+    await next();
+});
+
 app.MapGet("/", () => new
 {
     app = "BeaconSalami",
@@ -20,6 +33,9 @@ app.MapGet("/", () => new
 // Health check. Used by App Service (week 35), by health-check.sh (week 36)
 // and by the container (week 38). Do not remove.
 app.MapGet("/health", () => Results.Ok("OK"));
+
+// NEW: shows which instance answered and how many links it holds in memory.
+app.MapGet("/instance", () => Results.Ok(new { instance = instanceId, links = links.Count }));
 
 // POST /shorten  { "url": "https://example.com/very/long/path" }
 // -> { "code": "3", "shortUrl": "/3" }
@@ -44,8 +60,6 @@ app.MapGet("/{code}", (string code) =>
         ? Results.Redirect(url)
         : Results.NotFound(new { error = $"No link found for code '{code}'." });
 });
-
-
 
 app.Run();
 
