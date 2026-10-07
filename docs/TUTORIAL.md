@@ -302,7 +302,7 @@ rules: [
 
 - **`minReplicas: 0`** — scale-to-zero. Unlike the App Service track (always-on, `alwaysOn: true`), a demo app with no real traffic doesn't need to run continuously here; this is a deliberate contrast between the two tracks, not an oversight.
 - **`maxReplicas: 3`** — kept in line with the `instanceCount` ceiling chosen for App Service in week 35, for the same underlying reason: enough to prove horizontal scaling under load, capped low enough to bound cost if something misbehaves.
-- **`concurrentRequests: 10`** — the HTTP scale rule's threshold: once a replica is handling more than 10 concurrent requests, Container Apps starts another replica. A low number was chosen on purpose, since the app itself is lightweight (an in-memory dictionary, no real backend work per request) — it should scale out early rather than let one replica queue up requests.
+- **`concurrentRequests: 10`** — the HTTP scale rule's threshold: once a replica is handling more than 10 concurrent requests, Container Apps starts another replica. A low number was chosen on purpose, since the app itself is lightweight (an in-memory dictionary, no real backend work per request) — it should scale out early rather than let one replica queue up requests. Verified in the last week: after 300 concurrent requests to `/health`, `az containerapp replica list` went from one replica to two.
 
 ### 3️⃣ Registry authentication — both directions (K2, Komp1)
 
@@ -439,8 +439,26 @@ This section is written for someone who has **never seen this project**: an empt
 | An Azure subscription where you may create resources **and** app registrations | `az account show` |
 | Azure CLI, GitHub CLI and Git installed | `az --version`, `gh --version`, `git --version` |
 | Logged in to both | `az login` and `gh auth login` |
-| A GitHub repo containing this code, **readable by the teacher** (public, or add the teacher as collaborator) | `gh repo view` |
 | A shell that understands bash (Git Bash on Windows) | — |
+| Azure resource providers registered (only needed once per new subscription) | the loop below |
+
+Get the code into **your own** GitHub repo, readable by the teacher (public, or add the teacher as collaborator):
+
+```bash
+gh repo create my-beacon --public
+git clone https://github.com/Raymon85/beaconSalami.git
+cd beaconSalami
+git remote set-url origin https://github.com/<your-user>/my-beacon.git
+git push -u origin main
+```
+
+Register the resource providers this project uses (harmless if they are already registered):
+
+```bash
+for p in Microsoft.Web Microsoft.App Microsoft.ContainerRegistry Microsoft.OperationalInsights Microsoft.KeyVault; do
+  az provider register --namespace $p
+done
+```
 
 > 💡 On Windows with Git Bash, put `MSYS_NO_PATHCONV=1` in front of any command that takes an Azure path starting with `/` (for example `/subscriptions/...`). Without it Git Bash rewrites the path into a Windows path and the command fails with a confusing error.
 
@@ -454,6 +472,7 @@ Some Azure names are **globally unique** — if I already own `acrclo25rayan`, n
 | `kv-clo25-rayan` (Key Vault) | ✅ yes | `infra/security.bicepparam` |
 | `app-clo25-rayan` (web app) | ✅ yes (it becomes `<name>.azurewebsites.net`) | `infra/main.bicepparam`, `infra/security.bicepparam`, `deploy.yml` |
 | `rg-clo25-rayan` (resource group) | no | `deploy-container.yml` (`AZURE_RESOURCE_GROUP`), the commands below |
+| `hamedmonfared85_asp_7506` (App Service plan, created by `az webapp up` in week 35) | no | `infra/main.bicepparam` — note that `grep "rayan"` does **not** find it |
 | `ca-clo25-rayan` (container app) | no | `infra/container.bicep`, `deploy-container.yml` (`CONTAINER_APP_NAME`) |
 | `cae-clo25-rayan`, `log-clo25-rayan` | no | `infra/container.bicep` |
 
@@ -498,7 +517,7 @@ az deployment group create \
 
 ### 4️⃣ App Service pipeline secret
 
-The App Service pipeline (`deploy.yml`) deploys with a publish profile. Repeat Week 36, steps 4 and 5: re-enable basic auth on the new app, then pipe the new publish profile straight into the `AZURE_WEBAPP_PUBLISH_PROFILE` secret. A publish profile belongs to one specific app, so it is invalid after every resource group rebuild.
+The App Service pipeline (`deploy.yml`) deploys with a publish profile. Run the commands marked `# 4.` and `# 5.` in the code block of Week 36, section 5: re-enable basic auth on the new app, then pipe the new publish profile straight into the `AZURE_WEBAPP_PUBLISH_PROFILE` secret. A publish profile belongs to one specific app, so it is invalid after every resource group rebuild.
 
 ### 5️⃣ Container Apps pipeline identity — OIDC (F1, F2 VG)
 
@@ -532,7 +551,7 @@ az ad app federated-credential create --id "$APP_ID" --parameters '{
 }'
 ```
 
-`<SUBJECT>` identifies this repo and branch, and it is different for every repo. The reliable way to get it: run the pipeline once. The `Log in to Azure` step prints the token it received, including a line `subject claim - repo:<owner>@<id>/<repo>@<id>:ref:refs/heads/main`. Copy that value exactly, create the credential, then re-run the workflow. Azure compares the subject character by character, so one wrong character means no login.
+`<SUBJECT>` identifies this repo and branch, and it is different for every repo. The reliable way to get it: run the pipeline once (`gh workflow run deploy-container.yml`) — **this first run is expected to fail**, and that is the point. The `Log in to Azure` step prints the token it received, including a line `subject claim - repo:<owner>@<id>/<repo>@<id>:ref:refs/heads/main`. Copy that value exactly, create the credential, then re-run the workflow. Azure compares the subject character by character, so one wrong character means no login.
 
 The workflow also needs `permissions: id-token: write`, otherwise GitHub never issues the token. It is already set in `deploy-container.yml`.
 
@@ -549,8 +568,11 @@ If this is left stale, the pipeline deploys successfully and then fails at the h
 
 ### 7️⃣ Deploy and verify
 
+A freshly provisioned web app is **empty** until a pipeline deploys code to it, and a `git push` with unchanged code triggers nothing. So start both pipelines by hand:
+
 ```bash
-git push                           # triggers both pipelines
+gh workflow run deploy.yml
+gh workflow run deploy-container.yml
 gh run list --limit 5              # both should be ✓
 ./scripts/health-check.sh https://<container-app-fqdn>/health
 ./scripts/health-check.sh https://<web-app-name>.azurewebsites.net/health
@@ -599,7 +621,7 @@ These are the weaknesses in my own solution that I know about, ordered by how mu
 
 ### 1️⃣ State lives in memory — and so does the ID counter
 
-The link store is a `ConcurrentDictionary` and the short codes come from a `counter` variable, both inside one running process. Every instance (App Service) or replica (Container Apps) therefore has its own copy of both. The Week 39 probe showed this with a counter, and the link store behaves the same way: in my own tests the same short code answered 302 on one request and 404 on the next, depending on which replica the load balancer picked.
+The link store is a `ConcurrentDictionary` and the short codes come from a `counter` variable, both inside one running process. Every instance (App Service) or replica (Container Apps) therefore has its own copy of both. The Week 39 probe showed this with a counter, and the link store behaves the same way: on the last day I created one link on the 3-instance App Service track and called `/1` ten times. Three different `X-Instance-Id` values answered; only the instance that had created the link returned `302`, the other two returned `404`.
 
 The counter makes it worse than "link not found". Every replica starts counting at 0, so the first link created on each replica gets the code `1`. The same short code can end up pointing at **two different URLs**, and a user may be redirected to the wrong site instead of getting an error.
 
