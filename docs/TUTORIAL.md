@@ -308,7 +308,7 @@ rules: [
 
 Two separate authentication problems had to be solved, in opposite directions:
 
-**Pushing an image into the registry (CI/CD → ACR).** The GitHub Actions pipeline authenticates as the same `sp-clo25-rayan` service principal used for Bicep deployments (Plan A, `AZURE_CREDENTIALS` secret), via `azure/login@v2`. Once logged in, `az acr build` both builds *and* pushes under that identity — no separate registry credential is needed for this direction, since the service principal's `Contributor` role on the resource group already covers ACR.
+**Pushing an image into the registry (CI/CD → ACR).** The GitHub Actions pipeline authenticates as the same `sp-clo25-rayan` service principal used for Bicep deployments (Plan A, `AZURE_CREDENTIALS` secret), via `azure/login@v2`. Once logged in, `az acr build` both builds *and* pushes under that identity — no separate registry credential is needed for this direction, since the service principal's `Contributor` role on the resource group already covers ACR. *(This describes week 38; in week 40 the container pipeline switched to OIDC, see below.)*
 
 **Pulling an image out of the registry (Container Apps → ACR).** This is a completely different identity: the Container App itself needs credentials to pull the image at startup, independent of whoever pushed it. `container.bicep` solves this with the registry's admin credentials (`adminUserEnabled: true`, then `acr.listCredentials()`), stored as a Container Apps *secret* (`acr-password`) rather than a plain property — so the password never appears in cleartext in the template or its outputs.
 
@@ -621,7 +621,7 @@ These are the weaknesses in my own solution that I know about, ordered by how mu
 
 ### 1️⃣ State lives in memory — and so does the ID counter
 
-The link store is a `ConcurrentDictionary` and the short codes come from a `counter` variable, both inside one running process. Every instance (App Service) or replica (Container Apps) therefore has its own copy of both. The Week 39 probe showed this with a counter, and the link store behaves the same way: on the last day I created one link on the 3-instance App Service track and called `/1` ten times. Three different `X-Instance-Id` values answered; only the instance that had created the link returned `302`, the other two returned `404`.
+The link store is a `ConcurrentDictionary` and the short codes come from a `counter` variable, both inside one running process. Every instance (App Service) or replica (Container Apps) therefore has its own copy of both. The Week 39 probe showed this with a counter, and the link store behaves the same way. To make it visible I added a response header, `X-Instance-Id`, in the last week: it holds the name of the instance or replica that answered, and a small `/instance` endpoint returns the same name plus the number of links held in that process's memory. On the last day I created one link on the 3-instance App Service track and called `/1` ten times. Three different `X-Instance-Id` values answered; only the instance that had created the link returned `302`, the other two returned `404`.
 
 The counter makes it worse than "link not found". Every replica starts counting at 0, so the first link created on each replica gets the code `1`. The same short code can end up pointing at **two different URLs**, and a user may be redirected to the wrong site instead of getting an error.
 
