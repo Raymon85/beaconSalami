@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: beacon
+  labels:
+    app: beacon
+spec:
+  containers:
+    - name: beacon
+      image: beacon:v1
+      ports:
+        - containerPort: 8080
